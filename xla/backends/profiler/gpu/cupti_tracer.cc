@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "xla/backends/profiler/gpu/cupti_tracer.h"
 
+#include <algorithm>
 #include <list>
 #include <string_view>
 #include <tuple>
@@ -23,7 +24,9 @@ limitations under the License.
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/log.h"
 #include "absl/types/span.h"
+#include "third_party/gpus/cuda/extras/CUPTI/include/cupti_activity.h"
 #include "third_party/gpus/cuda/extras/CUPTI/include/generated_nvtx_meta.h"
 #include "third_party/gpus/cuda/include/cuda.h"
 #include "xla/backends/profiler/gpu/cupti_buffer_events.h"
@@ -851,11 +854,6 @@ absl::Status AddDriverApiCallbackEvent(
     CUpti_CallbackId cbid, const CUpti_CallbackData *cbdata) {
   absl::string_view annotation = AnnotationStack::Get();
   absl::string_view nvtx_range = "";
-  if (!annotation.empty() &&
-      cbid != CUPTI_DRIVER_TRACE_CBID_cuLaunchCooperativeKernelMultiDevice) {
-    nvtx_range = NVTXRangeTracker::CurrentRange();
-  }
-
   auto &guarded_annotations_and_events =
       PerThreadCallbackAnnotationsAndEvents::Get();
   if (tracer->TooManyCallbackEvents()) {
@@ -993,6 +991,12 @@ const char *GetTraceEventTypeName(const CuptiTracerEventType &type) {
       return "HostUnregister";
     case CuptiTracerEventType::CudaGraph:
       return "CudaGraph";
+    case CuptiTracerEventType::ThreadMarkerRange:
+      return "ThreadMarkerRange";
+    case CuptiTracerEventType::ThreadMarkerStart:
+      return "ThreadMarkerStart";
+    case CuptiTracerEventType::ThreadMarkerEnd:
+      return "ThreadMarkerEnd";
     case CuptiTracerEventType::Unsupported:
       return "";
   }
@@ -1030,8 +1034,24 @@ void CuptiTracer::Enable(const CuptiTracerOptions &option,
   option_ = option;
   collector_ = collector;
 
+  // For nvtx tracking, utilize CUPTI activity marker and marker_data.
+  if (option_->enable_nvtx_tracking) {
+    std::vector<CUpti_ActivityKind> &activities = option_->activities_selected;
+    if (std::find(activities.begin(), activities.end(),
+                  CUPTI_ACTIVITY_KIND_MARKER) == activities.end()) {
+      VLOG(1) << "Adding CUPTI_ACTIVITY_KIND_MARKER to activities:"
+              << (int)CUPTI_ACTIVITY_KIND_MARKER;
+      activities.push_back(CUPTI_ACTIVITY_KIND_MARKER);
+    }
+    if (std::find(activities.begin(), activities.end(),
+                  CUPTI_ACTIVITY_KIND_MARKER_DATA) == activities.end()) {
+      VLOG(1) << "Adding CUPTI_ACTIVITY_KIND_MARKER_DATA to activities";
+      activities.push_back(CUPTI_ACTIVITY_KIND_MARKER_DATA);
+    }
+  }
+
   cupti_driver_api_hook_ = std::make_unique<CuptiDriverApiHookWithActivityApi>(
-      option, cupti_interface_, this);
+      *option_, cupti_interface_, this);
 
   absl::Status status = EnableApiTracing();
   need_root_access_ |= status.code() == tsl::error::PERMISSION_DENIED;
@@ -1144,10 +1164,10 @@ absl::Status CuptiTracer::EnableApiTracing() {
         1 /* ENABLE */, subscriber_, CUPTI_CB_DOMAIN_DRIVER_API));
   }
 
-  if (option_->enable_nvtx_tracking) {
-    RETURN_IF_CUPTI_ERROR(cupti_interface_->EnableDomain(
-        1 /* ENABLE */, subscriber_, CUPTI_CB_DOMAIN_NVTX));
-  }
+  // There is no easy api to get the domain string from CUPTI_CB_DOMAIN_NVTX
+  // callback. So we use ACTIVIY_MARKERS to get the domain/range_name strings,
+  // and generate the related nvtx range event. So we do not need to use the
+  // CUPTI_CB_DOMAIN_NVTX callback here.
   return absl::OkStatus();
 }
 
@@ -1170,11 +1190,6 @@ absl::Status CuptiTracer::DisableApiTracing() {
   } else {
     RETURN_IF_CUPTI_ERROR(cupti_interface_->EnableDomain(
         0 /* DISABLE */, subscriber_, CUPTI_CB_DOMAIN_DRIVER_API));
-  }
-
-  if (option_->enable_nvtx_tracking) {
-    RETURN_IF_CUPTI_ERROR(cupti_interface_->EnableDomain(
-        0 /* DISABLE */, subscriber_, CUPTI_CB_DOMAIN_NVTX));
   }
 
   VLOG(1) << "Disable subscriber";
@@ -1251,25 +1266,6 @@ absl::Status CuptiTracer::Finalize() {
   return 0;
 }
 
-absl::Status CuptiTracer::HandleNVTXCallback(CUpti_CallbackId cbid,
-                                             const CUpti_CallbackData *cbdata) {
-  const CUpti_NvtxData *pdata =
-      reinterpret_cast<const CUpti_NvtxData *>(cbdata);
-  if (cbid == CUPTI_CBID_NVTX_nvtxDomainRangePushEx) {
-    const nvtxDomainRangePushEx_params *params =
-        reinterpret_cast<const nvtxDomainRangePushEx_params *>(
-            pdata->functionParams);
-    // TODO(profiler): The messageType is actually NVTX_MESSAGE_TYPE_REGISTERED
-    // (which is 3), However it seems to me that we can not get the registered
-    // string from nvtxDomainRegisterStringA_params. If we reinterpret the
-    // payload as ascii, it happen to work.
-    NVTXRangeTracker::EnterRange(params->core.eventAttrib->message.ascii);
-  } else if (cbid == CUPTI_CBID_NVTX_nvtxDomainRangePop) {
-    NVTXRangeTracker::ExitRange();
-  }
-  return absl::OkStatus();
-}
-
 // Resource callback happens logically inside a driver API call's enter/exit.
 // Some per-thread data structure to record the graph ids.
 absl::Status CuptiTracer::HandleResourceCallback(
@@ -1334,7 +1330,6 @@ absl::Status CuptiTracer::HandleCallback(CUpti_CallbackDomain domain,
   if (!api_tracing_enabled_) return absl::OkStatus();  // already unsubscribed.
   if (!cupti_driver_api_hook_)
     return absl::OkStatus();  // already unsubscribed.
-  if (domain == CUPTI_CB_DOMAIN_NVTX) return HandleNVTXCallback(cbid, cbdata);
   if (domain == CUPTI_CB_DOMAIN_DRIVER_API)
     return HandleDriverApiCallback(cbid, cbdata);
   if (domain == CUPTI_CB_DOMAIN_RESOURCE)

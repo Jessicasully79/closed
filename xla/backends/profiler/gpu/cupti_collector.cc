@@ -85,7 +85,13 @@ bool IsHostEvent(const CuptiTracerEvent& event, int64_t* line_id) {
     *line_id = event.thread_id;
     return true;
   }
-  // Non-overhead activity events are device events.
+  // nvtx marker events from activity source are host events.
+  if (event.source == CuptiTracerEventSource::Activity &&
+      event.type == CuptiTracerEventType::ThreadMarkerRange) {
+    *line_id = event.thread_id;
+    return true;
+  }
+  // Other non-overhead activity events are device events.
   if (event.type != CuptiTracerEventType::Overhead) {
     *line_id = event.stream_id;
     return false;
@@ -165,7 +171,7 @@ class PerDeviceCollector {
     return stats;
   }
 
-  void CreateXEvent(const CuptiTracerEvent& event, XPlaneBuilder* plane,
+  void CreateXEvent(CuptiTracerEvent& event, XPlaneBuilder* plane,
                     uint64_t start_gpu_ns, uint64_t end_gpu_ns,
                     XLineBuilder* line) {
     if (event.start_time_ns < start_gpu_ns || event.end_time_ns > end_gpu_ns ||
@@ -183,6 +189,12 @@ class PerDeviceCollector {
     if (event.graph_id != 0 && event.type == CuptiTracerEventType::CudaGraph &&
         event.source == CuptiTracerEventSource::DriverCallback) {
       absl::StrAppend(&kernel_name, " (CudaGraph:", event.graph_id, ")");
+    } else if (event.type == CuptiTracerEventType::ThreadMarkerRange) {
+      kernel_name =
+          event.nvtx_range.empty()
+              ? absl::StrCat("NVTX::", kernel_name)
+              : absl::StrCat("NVTX::", event.nvtx_range, "::", kernel_name);
+      event.nvtx_range = "";
     }
     XEventMetadata* event_metadata =
         plane->GetOrCreateEventMetadata(std::move(kernel_name));
@@ -680,6 +692,7 @@ void CuptiTraceCollector::OnTracerCachedActivityBuffers(
 
 // CuptiTraceCollectorImpl store the CuptiTracerEvents from CuptiTracer and
 // eventually convert and filter them to XSpace.
+// It also add support to handle cupti activity events for nvtx thread markers.
 class CuptiTraceCollectorImpl : public CuptiTraceCollector {
  public:
   CuptiTraceCollectorImpl(const CuptiTracerCollectorOptions& option,
@@ -698,6 +711,13 @@ class CuptiTraceCollectorImpl : public CuptiTraceCollector {
       num_callback_events_++;
     } else {
       num_activity_events_++;
+    }
+    if (event.type == CuptiTracerEventType::ThreadMarkerStart ||
+        event.type == CuptiTracerEventType::ThreadMarkerEnd) {
+      // Process the nvtx marker, merge thread range start/end if appropriate.
+      // If merged, the event will contains the merged content, and be used for
+      // followed AddEvent() processing.
+      if (!AddNvtxMarker(event)) return;
     }
     per_device_collector_[event.device_id].AddEvent(std::move(event));
   }
@@ -775,6 +795,38 @@ class CuptiTraceCollectorImpl : public CuptiTraceCollector {
   uint64_t start_walltime_ns_;
   uint64_t start_gpu_ns_;
   int num_gpus_;
+  uint32_t num_duplicate_nvtx_marker_start_ = 0;
+  uint32_t num_unmatched_nvtx_marker_end_ = 0;
+
+  // process the nvtx marker, a)cache range start event, or b)merge range end
+  // with its corresponding start event. If merged, the event be updated with
+  // the merged content and return true. If not merged, return false.
+  bool AddNvtxMarker(CuptiTracerEvent& event) {
+    const uint32_t marker_id = event.graph_id;
+    auto it = nvtx_markers_.find(marker_id);
+    if (event.type == CuptiTracerEventType::ThreadMarkerStart) {
+      if (it == nvtx_markers_.end()) {
+        nvtx_markers_[marker_id] =
+            std::make_unique<CuptiTracerEvent>(std::move(event));
+      } else {
+        LOG_IF(ERROR, ++num_duplicate_nvtx_marker_start_ < 100)
+            << "Duplicate nvtx thread range start marker id: " << marker_id;
+      }
+    } else if (event.type == CuptiTracerEventType::ThreadMarkerEnd) {
+      if (it != nvtx_markers_.end()) {
+        it->second->type = CuptiTracerEventType::ThreadMarkerRange;
+        it->second->end_time_ns = event.end_time_ns;
+        it->second->graph_id = 0;
+        event = std::move(*it->second);
+        nvtx_markers_.erase(it);
+        return true;  // The event is merged for further processing.
+      } else {
+        LOG_IF(ERROR, ++num_unmatched_nvtx_marker_end_ < 100)
+            << "Unmatched nvtx thread range end marker id: " << marker_id;
+      }
+    }
+    return false;
+  }
 
   // Set the all XLines of specified XPlane to starting walltime.
   // Events time in both host and device planes are CUTPI timestamps.
@@ -788,6 +840,8 @@ class CuptiTraceCollectorImpl : public CuptiTraceCollector {
   }
 
   absl::FixedArray<PerDeviceCollector> per_device_collector_;
+  absl::flat_hash_map<uint32_t, std::unique_ptr<CuptiTracerEvent>>
+      nvtx_markers_;
 
   CuptiTraceCollectorImpl(const CuptiTraceCollectorImpl&) = delete;
   void operator=(const CuptiTraceCollectorImpl&) = delete;
