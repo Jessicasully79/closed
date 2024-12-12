@@ -211,6 +211,15 @@ class HloRunnerAgnosticTestBase : public HloHardwareIndependentTestBase {
       const std::function<void(HloModule*)>& test_preprocessor = nullptr,
       std::optional<int64_t> args_max_bits_of_precision = std::nullopt);
 
+  // Executes an hlo module with fake inputs num_runs times and compares the
+  // results.
+  [[nodiscard]] ::testing::AssertionResult RunAndCompareMultiple(
+      std::unique_ptr<HloModule> module, const std::optional<ErrorSpec>& error,
+      absl::string_view hlo_text, const HloModuleConfig& config, int num_runs,
+      const std::function<void(HloModule*)>& reference_preprocessor = nullptr,
+      const std::function<void(HloModule*)>& test_preprocessor = nullptr,
+      std::optional<int64_t> args_max_bits_of_precision = std::nullopt);
+
   // Same as above, except that the module will be executed without Hlo
   // optimization.
   [[nodiscard]] ::testing::AssertionResult RunAndCompareNoHloPasses(

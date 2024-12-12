@@ -20,6 +20,7 @@ limitations under the License.
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -289,6 +290,38 @@ HloRunnerAgnosticTestBase::ExecuteReplicated(
 
   return RunAndCompare(std::move(module), fake_argument_ptrs, error,
                        reference_preprocessor, test_preprocessor);
+}
+
+// This function is highly inefficient, because it compiles hlo text to module
+// for each run. There is no other way to do this because
+// ParseAndReturnVerifiedModule returns unique_ptr. Need a similar to
+// ParseAndReturnVerifiedModule function that returns shared_ptr.
+::testing::AssertionResult HloRunnerAgnosticTestBase::RunAndCompareMultiple(
+    std::unique_ptr<HloModule> module, const std::optional<ErrorSpec>& error,
+    absl::string_view hlo_text, const HloModuleConfig& config,
+    const int num_runs,
+    const std::function<void(HloModule*)>& reference_preprocessor,
+    const std::function<void(HloModule*)>& test_preprocessor,
+    const std::optional<int64_t> args_max_bits_of_precision) {
+  auto random_engine = std::make_unique<std::minstd_rand0>();
+  ::testing::AssertionResult result = ::testing::AssertionSuccess();
+  for (int i = 0; i < num_runs && result; ++i) {
+    std::unique_ptr<HloModule> module =
+        ParseAndReturnVerifiedModule(hlo_text, config).value();
+    const std::vector<Literal> fake_arguments =
+        MakeFakeArguments(
+            module.get(), random_engine.get(), /*use_large_range=*/false,
+            /*treat_gte_as_data_formatting=*/false, args_max_bits_of_precision)
+            .value();
+    std::vector<Literal*> fake_argument_ptrs;
+    absl::c_transform(
+        fake_arguments, std::back_inserter(fake_argument_ptrs),
+        [](const Literal& literal) { return const_cast<Literal*>(&literal); });
+
+    result = RunAndCompare(std::move(module), fake_argument_ptrs, error,
+                           reference_preprocessor, test_preprocessor);
+  }
+  return result;
 }
 
 ::testing::AssertionResult HloRunnerAgnosticTestBase::RunAndCompareNoHloPasses(

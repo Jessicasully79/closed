@@ -72,7 +72,8 @@ class ElementalIrEmitterExecutionTest : public HloTestBase {
     config.set_debug_options(debug_options);
     TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
                             ParseAndReturnVerifiedModule(hlo_text, config));
-    EXPECT_TRUE(RunAndCompare(std::move(module), ErrorSpec{(0.)}));
+    EXPECT_TRUE(RunAndCompareMultiple(std::move(module), ErrorSpec{(0.)},
+                                      hlo_text, config, 10));
   }
 };
 
@@ -445,8 +446,7 @@ XLA_TEST_F(ElementalIrEmitterExecutionTest,
 
 TYPED_TEST(ElementalIrEmitterExecutionTypedTest, ConvertFloatsToFloat) {
   auto tname = this->TypeName();
-  if (std::is_same<TypeParam, tsl::float8_e4m3>() ||
-      std::is_same<TypeParam, tsl::float8_e4m3fn>() ||
+  if (std::is_same<TypeParam, tsl::float8_e4m3fn>() ||
       std::is_same<TypeParam, tsl::float8_e4m3b11fnuz>()) {
     GTEST_SKIP() << "Skipping test for type " << tname;
   }
