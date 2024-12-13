@@ -129,13 +129,13 @@ tsl_pybind_extension(
     name = "kernel_runner_extention",
     testonly = 1,
     srcs = ["kernel_runner_extention.cc"],
-    visibility = ["//visibility:private"],  # the extention should always be linked via kernel_runner_pylib
+    module_name = "_extention",
+    visibility = ["//visibility:private"],  # the extention should always be linked via testlib
     deps = [
         ":elemental_kernel_emitter",
         ":kernel_runner",
         ":llvm_ir_kernel_emitter",
         ":llvm_ir_kernel_spec",
-        "//xla:shape_util",
         "//xla/codegen:kernel_emitter",
         "//xla/codegen:kernel_spec",
         "//xla/codegen/testlib:kernel_runner",
@@ -150,13 +150,15 @@ tsl_pybind_extension(
 )
 
 pytype_strict_library(
-    name = "kernel_runner_pylib",
+    name = "testlib",
     testonly = 1,
-    srcs = ["kernel_runner.py"],
+    srcs = [
+        "__init__.py",
+    ],
     srcs_version = "PY3",
     deps = [
         ":kernel_runner_extention",
-        "//xla/codegen/testlib:kernel_runner_pylib",  # buildcleaner: keep
+        "//xla/codegen/testlib",  # buildcleaner: keep
     ],
 )
 
@@ -186,9 +188,9 @@ py_strict_test(
         "no_oss",
     ],
     deps = [
-        ":kernel_runner_pylib",
+        ":testlib",
         "//third_party/py/numpy",
-        "//xla/codegen/testlib:kernel_runner_pylib",
+        "//xla/codegen/testlib",
         "@absl_py//absl/testing:absltest",
     ],
 )
@@ -203,10 +205,9 @@ py_strict_test(
         "no_oss",
     ],
     deps = [
-        ":kernel_runner_pylib",
+        ":testlib",
         "//third_party/py/numpy",
-        "//xla/codegen/testlib:kernel_runner_pylib",
-        "//xla/python:xla_extension",
+        "//xla/codegen/testlib",
         "@absl_py//absl/testing:absltest",
         "@absl_py//absl/testing:parameterized",
     ],
