@@ -2304,6 +2304,7 @@ gpu_kernel_library(
         "@local_config_cuda//cuda:cuda_headers",
     ]) + if_rocm_is_configured([
         "@local_config_rocm//rocm:rocm_headers",
+        "@local_config_rocm//rocm:rocm_config",
     ]),
 )
 
@@ -2463,6 +2464,10 @@ cc_library(
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:ml_dtypes",
         "@tsl//tsl/platform:statusor",
+    ]) + if_rocm_is_configured([
+        # keep sorted
+        "@local_config_rocm//rocm:rocm_config",
+        "@local_config_rocm//rocm:rocm_headers",
     ]),
 )
 
@@ -2473,7 +2478,9 @@ gpu_kernel_library(
     deps = [
         "//xla:shape_util",
         "//xla:types",
-    ],
+    ] + if_rocm_is_configured([
+        "@local_config_rocm//rocm:rocm_headers",
+    ]),
 )
 
 xla_test(
