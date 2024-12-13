@@ -39,10 +39,14 @@ tsl_pybind_extension(
     visibility = ["//visibility:private"],  # the extention should always be linked via kernel_runner_pylib
     deps = [
         ":kernel_runner",
+        "//xla:comparison_util",
         "//xla:literal",
+        "//xla:shape_util",
+        "//xla:util",
         "//xla/codegen:kernel_emitter",
         "//xla/codegen:kernel_spec",
         "//xla/hlo/ir:hlo",
+        "//xla/python:nb_absl_span",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",

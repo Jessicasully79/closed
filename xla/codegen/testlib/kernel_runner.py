@@ -21,7 +21,9 @@ from xla.python import xla_extension
 
 # Classes first
 # go/keep-sorted start
+ComparisonDirection = kernel_runner_extention.ComparisonDirection
 DummyAddKernelRunner = kernel_runner_extention.DummyAddKernelRunner
+HloInstruction = kernel_runner_extention.HloInstruction
 HloOpcode = kernel_runner_extention.HloOpcode
 KernelEmmitter = kernel_runner_extention.KernelEmitter
 KernelRunner = kernel_runner_extention.KernelRunner
