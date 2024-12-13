@@ -42,7 +42,6 @@ namespace xla {
 namespace {
 
 absl::Mutex mu(absl::kConstInit);
-absl::CondVar* ready;
 absl::once_flag init_flag;
 std::list<SlowOperationAlarm*>* outstanding_alarms ABSL_PT_GUARDED_BY(mu) =
     nullptr;
@@ -50,9 +49,8 @@ std::list<SlowOperationAlarm*>* outstanding_alarms ABSL_PT_GUARDED_BY(mu) =
 }  // namespace
 
 void SlowOperationAlarm::AlarmLoop() {
+  absl::MutexLock lock(&mu);
   while (true) {
-    absl::MutexLock lock(&mu);
-
     // Fire any alarms which are ready.
     absl::Time now = absl::Now();
     for (auto it = outstanding_alarms->begin();
@@ -85,13 +83,17 @@ void SlowOperationAlarm::AlarmLoop() {
                                     ? (*next_alarm)->deadline()
                                     : absl::InfiniteFuture();
 
-    ready->WaitWithDeadline(&mu, deadline);
+    mu.AwaitWithDeadline(absl::Condition(
+                             +[](std::list<SlowOperationAlarm*>* alarms) {
+                               return !alarms->empty();
+                             },
+                             outstanding_alarms),
+                         deadline);
   }
 }
 
 void SlowOperationAlarm::ScheduleAlarm(SlowOperationAlarm* alarm) {
   absl::call_once(init_flag, [] {
-    ready = new absl::CondVar();
     outstanding_alarms = new std::list<SlowOperationAlarm*>();
     [[maybe_unused]] static tsl::Thread* t = tsl::Env::Default()->StartThread(
         tsl::ThreadOptions(), "SlowOperationAlarm", [] { AlarmLoop(); });
@@ -99,7 +101,6 @@ void SlowOperationAlarm::ScheduleAlarm(SlowOperationAlarm* alarm) {
 
   absl::MutexLock lock(&mu);
   outstanding_alarms->push_back(alarm);
-  ready->Signal();
 }
 
 void SlowOperationAlarm::UnscheduleAlarm(const SlowOperationAlarm* alarm) {
@@ -117,7 +118,7 @@ SlowOperationAlarm::SlowOperationAlarm(
     : SlowOperationAlarm(
           timeout,                                 //
           [msg = std::move(msg)] { return msg; },  //
-          counter, std::move(context)) {}
+          counter, context) {}
 
 SlowOperationAlarm::SlowOperationAlarm(
     absl::Duration timeout, std::function<std::string()> msg_fn,
@@ -125,7 +126,7 @@ SlowOperationAlarm::SlowOperationAlarm(
     absl::string_view context /*=""*/)
     : start_(absl::Now()),
       deadline_(start_ + timeout),
-      context_(std::move(context)),
+      context_(context),
       msg_fn_(std::move(msg_fn)),
       counter_(counter) {
   ScheduleAlarm(this);
