@@ -55,7 +55,9 @@ xla_cc_test(
         ":parallel_loop_runner",
         "//xla/tsl/concurrency:async_value",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/types:span",
         "@eigen_archive//:eigen3",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:test",
@@ -69,5 +71,45 @@ cc_library(
     hdrs = ["xnn_interop.h"],
     deps = [
         "@XNNPACK",
+    ],
+)
+
+cc_library(
+    name = "xnn_threadpool",
+    srcs = ["xnn_threadpool.cc"],
+    hdrs = ["xnn_threadpool.h"],
+    # copybara:uncomment_begin(google-only)
+    # local_defines = select({
+    # "@pthreadpool:pthreadpool_header_only_explicit_true": [
+    # "XLA_CPU_USE_CUSTOM_PTHREADPOOL",
+    # ],
+    # "//conditions:default": [],
+    # }),
+    # copybara:uncomment_end
+    deps = [
+        ":parallel_loop_runner",
+        "@eigen_archive//:eigen3",
+        "@pthreadpool",
+        "@tsl//tsl/platform:env",
+        "@tsl//tsl/platform:logging",
+    ],
+)
+
+xla_cc_test(
+    name = "xnn_threadpool_test",
+    srcs = ["xnn_threadpool_test.cc"],
+    deps = [
+        ":parallel_loop_runner",
+        ":xnn_threadpool",
+        "//xla/tsl/concurrency:async_value",
+        "@XNNPACK",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/synchronization",
+        "@eigen_archive//:eigen3",
+        "@pthreadpool",
+        "@tsl//tsl/platform:env",
+        "@tsl//tsl/platform:test",
+        "@tsl//tsl/platform:test_benchmark",
+        "@tsl//tsl/platform:test_main",
     ],
 )
